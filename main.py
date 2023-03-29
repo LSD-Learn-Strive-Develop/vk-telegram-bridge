@@ -3,15 +3,21 @@ import copy
 import asyncio
 import config
 
-from aiogram import Bot, Dispatcher, executor
+from aiogram import Bot, Dispatcher, executor, types
 from aiogram.utils.executor import start_webhook
+from aiogram.dispatcher.filters import Text
 from loguru import logger
+
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
 
 from start_script import start_script
 from config import SINGLE_START, TIME_TO_SLEEP
 from tools import prepare_temp_folder
 from last_id import check_data, write_data, read_data
 import messages
+import buttons
 
 logger.add(
     "./logs/debug.log",
@@ -49,6 +55,65 @@ links = {
     # }
 }
 
+statistics_file = 'statistics_data.pickle'
+statistics = {
+    'sent_posts': 0
+}
+
+
+def get_general_keyboard():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    row1 = [buttons.add_vk, buttons.add_tg]
+    row2 = [buttons.del_vk, buttons.del_tg]
+    row3 = [buttons.show]
+    keyboard.add(*row1).add(*row2).add(*row3)
+
+    return keyboard
+
+
+def get_menu():
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    row = [buttons.menu]
+    keyboard.add(*row)
+
+    return keyboard
+
+
+def get_tg_channels_keyboard(msg):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for channel, value in links.items():
+        if value['owner_id'] == msg.from_user.id:
+            but = [channel]
+            keyboard.add(*but)
+    but = [buttons.menu]
+    keyboard.add(*but)
+
+    return keyboard
+
+
+def get_vk_groups_keyboard(channel):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for group, status in links[channel]['links'].items():
+        but = [group]
+        keyboard.add(*but)
+    but = [buttons.menu]
+    keyboard.add(*but)
+
+    return keyboard
+
+
+class RegisterActions(StatesGroup):
+    waiting_for_forward_msg_from_channel = State()
+    waiting_verification = State()
+    
+    waiting_for_select_tg_for_add_vk = State()
+    waiting_for_add_vk_group = State()
+
+    waiting_for_select_tg_for_delete = State()
+
+    waiting_for_select_tg_for_delete_vk = State()
+    waiting_for_select_vk = State()
+
 
 async def on_startup(dp):
     await bot.set_webhook(WEBHOOK_URL)
@@ -60,19 +125,23 @@ async def on_shutdown(dp):
 
 @logger.catch
 async def background_on_start():
+    logger.info('background_on_start')
     global bot
     global links
     global links_file
+    global statistics
+    global statistics_file
 
     # d = dict()
     links = check_data(links, links_file)
-
+    statistics = check_data(statistics, statistics_file)
+    
     while True:
-        print('new iter')
+        logger.info('NEW ITERATION')
         links = read_data(links_file)
         links_copy = copy.deepcopy(links)
 
-        await start_script(bot, links_copy)
+        count_sent_post = await start_script(bot, links_copy)
 
         if links.keys() != links_copy.keys():
             for key in links.keys():
@@ -82,7 +151,11 @@ async def background_on_start():
         write_data(links_copy, links_file)
         prepare_temp_folder()
 
+        statistics['sent_posts'] += count_sent_post
+        write_data(statistics, statistics_file)
+
         await asyncio.sleep(6*60)
+        # await asyncio.sleep(10)
 
 
 async def on_bot_start_up(dp):
@@ -92,198 +165,344 @@ async def on_bot_start_up(dp):
     asyncio.ensure_future(background_on_start())
 
 
-async def start(msg):
+async def start(msg: types.Message, state: FSMContext):
     print(msg)
-    await msg.answer(messages.start)
+
+    await msg.answer(messages.start, reply_markup=get_general_keyboard())
+    await state.finish()
 
 
-def get_usernames(msg, forward=False):
-    user_username = msg.from_user.first_name
-    if msg.from_user.username != None:
-        user_username = msg.from_user.username
+def beautiful_display(dict_item):
+    text = (
+        'status: ' + str(dict_item['status']) + '\n' +
+        'owner_username: @' + str(dict_item['owner_username']) + '\n' +
+        'owner_id: ' + str(dict_item['owner_id']) + '\n' +
+        'links: ' + str(list(map(lambda x: 'vk.com/' + x, list(dict_item['links'].keys()))))
+    )
 
-    if forward:
-        if msg.forward_from_chat.username != None:
-            channel_username = msg.forward_from_chat.username
-        else:
-            channel_username = ''
-        return user_username, channel_username
+    return text
+
+
+async def show(msg: types.Message, state: FSMContext):
+    text = 'Ваши каналы и группы:\n'
+    for k, v in links.items():
+        if v['owner_id'] == msg.from_user.id:
+            text = text + '@' + str(k) + '\n' + beautiful_display(v) + '\n\n'
+
+    await msg.answer(text)
+
+
+async def show_all(msg: types.Message, state: FSMContext):
+    print(msg)
+
+    statistics_text = 'Отправлено постов: ' + str(statistics['sent_posts'])
+
+    text = ''
+    for k, v in links.items():
+        text = text + '@' + str(k) + '\n' + beautiful_display(v) + '\n\n'
+
+    await msg.answer(statistics_text + '\n\nСписок групп:\n' + text)
+
+
+async def go_to_menu(msg: types.Message, state: FSMContext):
+
+    await msg.answer(messages.select_action, reply_markup=get_general_keyboard())
+    await state.finish()
+
+
+def get_user_usernames(msg):
+    if msg.from_user.username:
+        return msg.from_user.username, False
     else:
-        return user_username
+        return msg.from_user.first_name, True
 
 
-async def forward_message(msg):
+def get_channel_usernames(msg):
+    if msg.forward_from_chat.username:
+        return msg.forward_from_chat.username, False
+    else:
+        return msg.forward_from_chat.title, True
+
+
+async def forward_message(msg: types.Message, state: FSMContext):
     print(msg)
     global links
     global links_file
 
     links = read_data(links_file)
 
-    user_username, channel_username = get_usernames(msg, forward=True)
+    user_username, err = get_user_usernames(msg)
+    if err:
+        await msg.answer(messages.not_public_user_username)
+        return
+
+    channel_username, err = get_channel_usernames(msg)
+    if err:
+        await msg.answer(messages.not_public_channel_username)
+        return
 
     if not channel_username in links:
         links[channel_username] = {
-            'status': False,
+            'status': True,
             'owner_username': user_username,
             'owner_id': msg.from_user.id,
             'links': {}
         }
 
         await bot.send_message(config.MY_ID, '@' + user_username + ' @' + channel_username)
-        await msg.answer('Ожидайте верификации')
+        # await msg.answer('Ожидайте верификации', reply_markup=types.ReplyKeyboardRemove())
+        await msg.answer(messages.tg_added, reply_markup=get_general_keyboard())
+        await state.finish()
 
         write_data(links, links_file)
     else:
-        await msg.answer('Этот канал уже привязан')
+        await msg.answer(messages.channel_already_added, reply_markup=get_general_keyboard())
 
 
-async def add_tg_channel(msg):
-    print(msg)
-    if msg.from_user.id != config.MY_ID:
-        await msg.answer('У вас нет прав на это действие')
+# async def add_tg_channel(msg: types.Message, state: FSMContext):
+#     logger.info('add_tg_channel')
+#     print(msg)
+#     if msg.from_user.id != config.MY_ID:
+#         await msg.answer('У вас нет прав на это действие')
+#         return
+
+#     global links
+#     global links_file
+
+#     links = read_data(links_file)
+
+#     link = msg.get_args().split('/')[-1]
+
+#     if link in links:
+#         if links[link]['status'] == False:
+#             links[link]['status'] = True
+#             await msg.answer('Канал верифицирован')
+#             await bot.send_message(links[link]['owner_id'], 'Канал прошел верификацию! Вернитесь в главное меню и добавьте группы ВК', reply_markup=get_general_keyboard())
+#             write_data(links, links_file)
+#         else:
+#             await msg.answer('Этот канал уже верифицирован')
+#     else:
+#         await msg.answer('Этого канала нет в системе')
+
+
+async def select_tg_for_add_vk(msg: types.Message, state: FSMContext):
+    if msg.text not in links:
+        await msg.answer(messages.channel_does_not_exist)
         return
 
+    await state.update_data(current_channel=msg.text)
+    await msg.answer(messages.vk_link, reply_markup=get_menu())
+    await state.set_state(RegisterActions.waiting_for_add_vk_group.state)
+
+
+async def add_vk_group(msg: types.Message, state: FSMContext):
+    print(msg)
     global links
     global links_file
 
     links = read_data(links_file)
 
-    link = msg.get_args().split('/')[-1]
+    user_data = await state.get_data()
+    # link = msg.get_args().split('/')[-1]
 
-    if link in links:
-        if links[link]['status'] == False:
-            links[link]['status'] = True
-            await msg.answer('Канал верифицирован')
-            await bot.send_message(links[link]['owner_id'], 'Канал прошел верификацию!\n\n Для добавления групп вк используйте команду (нужно использовать именно юзернейм группы, а не ссылку):\n/add_vk vk_group_username\n\n'+
-                                    'Для удаления групп вк используйте команду:\n/del_vk vk_group_username')
-            write_data(links, links_file)
-        else:
-            await msg.answer('Этот канал уже верифицирован')
-    else:
-        await msg.answer('Этого канала нет в системе')
-
-
-async def add_vk_group(msg):
-    print(msg)
-    global links
-    global links_file
-
-    links = read_data(links_file)
-
-    link = msg.get_args().split('/')[-1]
-
-    channel_username = ''   
-    for k, v in links.items():
-        if v['owner_id'] == msg.from_user.id:
-            channel_username = k
-    
-    if channel_username == '':
-        await msg.answer('У вас нет привязанного канала. Отправьте команду /start для привязки')
+    if not 'current_channel' in user_data:
+        await msg.answer('У вас нет привязанного канала', reply_markup=get_general_keyboard())
+        await state.finish()
         return
+
+    channel_username = user_data['current_channel']
+
+    link = msg.text.split('/')[-1]
 
     if links[channel_username]['status'] == False:
-        await msg.answer('Канал еще не верифицирован')
+        await msg.answer('Канал еще не верифицирован', reply_markup=get_general_keyboard())
         return
 
     if link in links[channel_username]['links']:
-        await msg.answer('Такая группа уже привязана')
+        await msg.answer(messages.group_already_added)
     else:
         links[channel_username]['links'][link] = 0
-        await msg.answer('Группа добавлена')
+        await msg.answer(messages.group_added, reply_markup=get_general_keyboard())
+        await state.finish()
 
     write_data(links, links_file)
 
 
-async def del_tg_channel(msg):
+async def del_tg_channel(msg: types.Message, state: FSMContext):
     print(msg)
-    if msg.from_user.id != config.MY_ID:
-        await msg.answer('У вас нет прав на это действие')
-        return
+    
+    # if msg.from_user.id != config.MY_ID:
+    #     await msg.answer('У вас нет прав на это действие')
+    #     return
 
     global links
     global links_file
 
+    if not msg.text in links:
+        await msg.answer(messages.channel_does_not_exist)
+        return
+
     links = read_data(links_file)
     
-    link = msg.get_args().split('/')[-1]
+    # link = msg.get_args().split('/')[-1]
+    link = msg.text
 
     if link in links:
         del links[link]
-        await msg.answer('Канал удален')
+        await msg.answer(messages.channel_removed, reply_markup=get_general_keyboard())
+        await state.finish()
     else:
-        await msg.answer('Нет такого канала')
+        await msg.answer(messages.channel_does_not_exist)
 
     write_data(links, links_file)
 
 
-async def del_vk_group(msg):
+async def del_vk_button(msg: types.Message, state: FSMContext):
+    if not msg.text in links:
+        await msg.answer(messages.channel_does_not_exist)
+        return
+
+    await state.update_data(current_channel=msg.text)
+
+    keyboard = get_vk_groups_keyboard(msg.text)
+    await msg.answer(messages.select_group, reply_markup=keyboard)
+    await state.set_state(RegisterActions.waiting_for_select_vk.state)
+
+
+async def del_vk_group(msg: types.Message, state: FSMContext):
     print(msg)
     global links
     global links_file
 
     links = read_data(links_file)
 
-    link = msg.get_args().split('/')[-1]
-
-    channel_username = ''   
-    for k, v in links.items():
-        if v['owner_id'] == msg.from_user.id:
-            channel_username = k
+    # link = msg.get_args().split('/')[-1]
+    user_data = await state.get_data()
     
-    if channel_username == '':
-        await msg.answer('У вас нет привязанного канала. Отправьте команду /start для привязки')
+    # for k, v in links.items():
+    #     if v['owner_id'] == msg.from_user.id:
+    #         channel_username = k
+    
+    if not 'current_channel' in user_data:
+        await msg.answer('У вас нет привязанного канала', reply_markup=get_general_keyboard())
+        await state.finish()
         return
+    
+    channel_username = user_data['current_channel'] 
 
     if links[channel_username]['status'] == False:
-        await msg.answer('Канал еще не верифицирован')
+        await msg.answer('Канал еще не верифицирован', reply_markup=get_general_keyboard())
+        await state.finish()
         return
 
-    if link in links[channel_username]['links']:
-        del links[channel_username]['links'][link]
+    if msg.text in links[channel_username]['links']:
+        del links[channel_username]['links'][msg.text]
+        await msg.answer(messages.group_removed, reply_markup=get_general_keyboard())
+        await state.finish()
     else:
-        await msg.answer('Такой группы нет в списке')
+        await msg.answer(messages.group_does_not_exist)
 
     write_data(links, links_file)
 
 
-async def show_links(msg):
-    print(msg)
-    await msg.answer('Список групп:\n' + str(links))
+async def choosing_base_action(msg: types.Message, state: FSMContext):
+    if msg.text == buttons.add_vk:
+        keyboard = get_tg_channels_keyboard(msg)
+
+        await msg.answer(messages.select_tg_for_add_vk, reply_markup=keyboard)
+        await state.set_state(RegisterActions.waiting_for_select_tg_for_add_vk.state)
+
+    elif msg.text == buttons.del_vk:
+        keyboard = get_tg_channels_keyboard(msg)
+
+        await msg.answer(messages.select_tg_for_delete_vk, reply_markup=keyboard)
+        await state.set_state(RegisterActions.waiting_for_select_tg_for_delete_vk.state)
+
+    elif msg.text == buttons.add_tg:
+        await msg.answer(messages.forward_msg_from_channel, reply_markup=get_menu())
+        await state.set_state(RegisterActions.waiting_for_forward_msg_from_channel.state)
+
+    elif msg.text == buttons.del_tg:
+        keyboard = get_tg_channels_keyboard(msg)
+
+        await msg.answer(messages.select_tg_for_delete, reply_markup=keyboard)
+        await state.set_state(RegisterActions.waiting_for_select_tg_for_delete.state)
+    
+    else:
+        await msg.answer(messages.no_such_action, reply_markup=get_general_keyboard())
 
 
 def create_bot_factory():
-    dp = Dispatcher(bot)
+    dp = Dispatcher(bot, storage=MemoryStorage())
 
     dp.register_message_handler(
         start,
-        commands='start'
+        commands='start',
+        state='*'
+    )
+    
+    dp.register_message_handler(
+        show_all,
+        commands='show_all',
+        state='*'
     )
 
-    dp.register_message_handler(forward_message, is_forwarded=True)
+    dp.register_message_handler(
+        show,
+        Text(equals=buttons.show, ignore_case=True),
+        state='*'
+    )
 
     dp.register_message_handler(
-        add_tg_channel,
-        commands='add_tg'
+        go_to_menu,
+        Text(equals=buttons.menu, ignore_case=True), 
+        state='*'
+    )
+
+    # Добавление ТГ канала
+    dp.register_message_handler(
+        forward_message, 
+        is_forwarded=True, 
+        state=RegisterActions.waiting_for_forward_msg_from_channel
+    )
+
+    # dp.register_message_handler(
+    #     add_tg_channel,
+    #     commands='add_tg',
+    #     state='*'
+    # )
+
+    # Добавиление ВК группы
+    dp.register_message_handler(
+        select_tg_for_add_vk,
+        state=RegisterActions.waiting_for_select_tg_for_add_vk
     )
 
     dp.register_message_handler(
         add_vk_group,
-        commands='add_vk'
+        state=RegisterActions.waiting_for_add_vk_group
     )
 
+    # Удаление ТГ канала
     dp.register_message_handler(
         del_tg_channel,
-        commands='del_tg'
+        state=RegisterActions.waiting_for_select_tg_for_delete
+    )
+
+    # Удаление ВК группы
+    dp.register_message_handler(
+        del_vk_button,
+        state=RegisterActions.waiting_for_select_tg_for_delete_vk
     )
 
     dp.register_message_handler(
         del_vk_group,
-        commands='del_vk'
+        state=RegisterActions.waiting_for_select_vk
     )
 
     dp.register_message_handler(
-        show_links,
-        commands='show'
+        choosing_base_action, 
+        state='*'
     )
 
     #await dp.start_polling()

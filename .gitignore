@@ -1,0 +1,4 @@
+config.py
+links_data.pickle
+logs/
+__pycache__/

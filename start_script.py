@@ -14,6 +14,8 @@ from tools import blacklist_check, whitelist_check, prepare_temp_folder
 
 
 async def start_script(bot, links):
+    count_sent_post = 0
+
     for channel_username in links.keys():
         if links[channel_username]['status'] == False:
             continue
@@ -30,7 +32,7 @@ async def start_script(bot, links):
                 config.REQ_COUNT,
             )
             if not items:
-                return
+                continue
 
             if "is_pinned" in items[0]:
                 items = items[1:]
@@ -104,9 +106,12 @@ async def start_script(bot, links):
                             parsed_post["photos"],
                             parsed_post["docs"],
                         )
+                        count_sent_post += 1
                         await asyncio.sleep(3)
 
                 print('ids ', new_last_id, last_known_id)
                 links[channel_username]['links'][vk_group_username] = new_last_id
 
             await asyncio.sleep(3)
+    
+    return count_sent_post
