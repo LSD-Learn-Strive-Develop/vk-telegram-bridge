@@ -12,6 +12,7 @@ from config import VK_TOKEN, REQ_VERSION
 def parse_post(
     item: dict, repost_exists: bool, item_type: str, group_name: str
 ) -> dict:
+    print(item)
     text = prepare_text_for_html(item["text"])
     if repost_exists:
         text = prepare_text_for_reposts(text, item, item_type, group_name)
