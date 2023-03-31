@@ -8,8 +8,7 @@ def read_id() -> int:
         return int(open("./last_id.txt", "r").read())
     except ValueError:
         logger.critical(
-            "The value of the last identifier is incorrect. "
-            "Please check the contents of the file 'last_id.txt'."
+            "The value of the last identifier is incorrect. Please check the contents of the file 'last_id.txt'."
         )
         exit()
 

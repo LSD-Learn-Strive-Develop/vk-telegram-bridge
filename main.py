@@ -3,14 +3,18 @@ import copy
 import asyncio
 import config
 
+import pymongo
+from pymongo import MongoClient
+
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.utils.executor import start_webhook
 from aiogram.dispatcher.filters import Text
-from loguru import logger
 
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.contrib.fsm_storage.mongo import MongoStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
+
+from loguru import logger
 
 from start_script import start_script
 from config import SINGLE_START, TIME_TO_SLEEP
@@ -36,29 +40,10 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = '127.0.0.1'
 WEBAPP_PORT = 7786
 
-bot = Bot(config.TG_BOT_TOKEN)
-links_file = 'links_data.pickle'
-# links = dict()
-# {
-#     'pmpu_news': 0,
-#     'sspmpu': 0
-# }
-links = {
-    #'amcp_feed': {
-    # 'nethub_test_channel': {
-    #     'status': True,
-    #     'owner_username': 'romanychev',
-    #     'owner_id': 248603604,
-    #     'links': {
-    #         'sciapmath': 0, 'stipkomsspmpu': 0, 'club158734605': 0, 'sspmpu': 0, 'pmpu_news': 0
-    #         }
-    # }
-}
+client = MongoClient('localhost', 27017)
+db = client[config.MONGO_DB_NAME]
 
-statistics_file = 'statistics_data.pickle'
-statistics = {
-    'sent_posts': 0
-}
+bot = Bot(config.TG_BOT_TOKEN)
 
 
 def get_general_keyboard():
@@ -81,9 +66,9 @@ def get_menu():
 
 def get_tg_channels_keyboard(msg):
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for channel, value in links.items():
-        if value['owner_id'] == msg.from_user.id:
-            but = [channel]
+    for obj in db.links.find():
+        if obj['owner_id'] == msg.from_user.id:
+            but = [obj['channel_username']]
             keyboard.add(*but)
     but = [buttons.menu]
     keyboard.add(*but)
@@ -93,8 +78,8 @@ def get_tg_channels_keyboard(msg):
 
 def get_vk_groups_keyboard(channel):
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for group, status in links[channel]['links'].items():
-        but = [group]
+    for obj in db.links.find_one({'channel_username': channel})['links']:
+        but = [obj['username']]
         keyboard.add(*but)
     but = [buttons.menu]
     keyboard.add(*but)
@@ -127,35 +112,20 @@ async def on_shutdown(dp):
 async def background_on_start():
     logger.info('background_on_start')
     global bot
-    global links
-    global links_file
-    global statistics
-    global statistics_file
-
-    # d = dict()
-    links = check_data(links, links_file)
-    statistics = check_data(statistics, statistics_file)
     
     while True:
         logger.info('NEW ITERATION')
-        links = read_data(links_file)
-        links_copy = copy.deepcopy(links)
 
-        count_sent_post = await start_script(bot, links_copy)
+        count_sent_post = await start_script(bot, db)
 
-        if links.keys() != links_copy.keys():
-            for key in links.keys():
-                if not key in links_copy.keys():
-                    links_copy[key] = 0
-
-        write_data(links_copy, links_file)
         prepare_temp_folder()
 
-        statistics['sent_posts'] += count_sent_post
-        write_data(statistics, statistics_file)
+        sent_posts = db.statistics.find_one()['sent_posts']
+        db.statistics.update_one(
+            {'sent_posts': sent_posts}, {'$set': {'sent_posts': sent_posts + count_sent_post}}
+        )
 
         await asyncio.sleep(6*60)
-        # await asyncio.sleep(10)
 
 
 async def on_bot_start_up(dp):
@@ -177,7 +147,7 @@ def beautiful_display(dict_item):
         'status: ' + str(dict_item['status']) + '\n' +
         'owner_username: @' + str(dict_item['owner_username']) + '\n' +
         'owner_id: ' + str(dict_item['owner_id']) + '\n' +
-        'links: ' + str(list(map(lambda x: 'vk.com/' + x, list(dict_item['links'].keys()))))
+        'links: ' + str(list(map(lambda x: 'vk.com/' + x['username'], dict_item['links'])))
     )
 
     return text
@@ -185,9 +155,9 @@ def beautiful_display(dict_item):
 
 async def show(msg: types.Message, state: FSMContext):
     text = 'Ваши каналы и группы:\n'
-    for k, v in links.items():
-        if v['owner_id'] == msg.from_user.id:
-            text = text + '@' + str(k) + '\n' + beautiful_display(v) + '\n\n'
+    for obj in db.links.find():
+        if obj['owner_id'] == msg.from_user.id:
+            text = text + '@' + str(obj['channel_username']) + '\n' + beautiful_display(obj) + '\n\n'
 
     await msg.answer(text)
 
@@ -195,11 +165,11 @@ async def show(msg: types.Message, state: FSMContext):
 async def show_all(msg: types.Message, state: FSMContext):
     print(msg)
 
-    statistics_text = 'Отправлено постов: ' + str(statistics['sent_posts'])
+    statistics_text = 'Отправлено постов: ' + str(db.statistics.find_one()['sent_posts'])
 
     text = ''
-    for k, v in links.items():
-        text = text + '@' + str(k) + '\n' + beautiful_display(v) + '\n\n'
+    for obj in db.links.find():
+        text = text + '@' + str(obj['channel_username']) + '\n' + beautiful_display(obj) + '\n\n'
 
     await msg.answer(statistics_text + '\n\nСписок групп:\n' + text)
 
@@ -226,11 +196,6 @@ def get_channel_usernames(msg):
 
 async def forward_message(msg: types.Message, state: FSMContext):
     print(msg)
-    global links
-    global links_file
-
-    links = read_data(links_file)
-
     user_username, err = get_user_usernames(msg)
     if err:
         await msg.answer(messages.not_public_user_username)
@@ -241,20 +206,20 @@ async def forward_message(msg: types.Message, state: FSMContext):
         await msg.answer(messages.not_public_channel_username)
         return
 
-    if not channel_username in links:
-        links[channel_username] = {
+    if not db.links.find_one({'channel_username': channel_username}):
+        db.links.insert_one({
+            'channel_username': channel_username,
             'status': True,
             'owner_username': user_username,
             'owner_id': msg.from_user.id,
-            'links': {}
-        }
+            'links': []
+        })
 
         await bot.send_message(config.MY_ID, '@' + user_username + ' @' + channel_username)
         # await msg.answer('Ожидайте верификации', reply_markup=types.ReplyKeyboardRemove())
         await msg.answer(messages.tg_added, reply_markup=get_general_keyboard())
         await state.finish()
 
-        write_data(links, links_file)
     else:
         await msg.answer(messages.channel_already_added, reply_markup=get_general_keyboard())
 
@@ -286,7 +251,7 @@ async def forward_message(msg: types.Message, state: FSMContext):
 
 
 async def select_tg_for_add_vk(msg: types.Message, state: FSMContext):
-    if msg.text not in links:
+    if not db.links.find_one({'channel_username': msg.text}):
         await msg.answer(messages.channel_does_not_exist)
         return
 
@@ -297,13 +262,7 @@ async def select_tg_for_add_vk(msg: types.Message, state: FSMContext):
 
 async def add_vk_group(msg: types.Message, state: FSMContext):
     print(msg)
-    global links
-    global links_file
-
-    links = read_data(links_file)
-
     user_data = await state.get_data()
-    # link = msg.get_args().split('/')[-1]
 
     if not 'current_channel' in user_data:
         await msg.answer('У вас нет привязанного канала', reply_markup=get_general_keyboard())
@@ -314,18 +273,21 @@ async def add_vk_group(msg: types.Message, state: FSMContext):
 
     link = msg.text.split('/')[-1]
 
-    if links[channel_username]['status'] == False:
+    channel = db.links.find_one({'channel_username': channel_username})
+    print(channel['status'])
+    if channel and channel['status'] == False:
         await msg.answer('Канал еще не верифицирован', reply_markup=get_general_keyboard())
         return
 
-    if link in links[channel_username]['links']:
+    groups_usernames = list(map(lambda x: x['username'], channel['links']))
+    if link in groups_usernames:
         await msg.answer(messages.group_already_added)
     else:
-        links[channel_username]['links'][link] = 0
+        db.links.update_one(
+            {'channel_username': channel_username}, {'$push': {'links': {'username': link, 'last_id': 0}}}
+        )
         await msg.answer(messages.group_added, reply_markup=get_general_keyboard())
         await state.finish()
-
-    write_data(links, links_file)
 
 
 async def del_tg_channel(msg: types.Message, state: FSMContext):
@@ -335,30 +297,19 @@ async def del_tg_channel(msg: types.Message, state: FSMContext):
     #     await msg.answer('У вас нет прав на это действие')
     #     return
 
-    global links
-    global links_file
-
-    if not msg.text in links:
+    if not db.links.find_one({'channel_username': msg.text}):
         await msg.answer(messages.channel_does_not_exist)
         return
 
-    links = read_data(links_file)
-    
-    # link = msg.get_args().split('/')[-1]
     link = msg.text
 
-    if link in links:
-        del links[link]
-        await msg.answer(messages.channel_removed, reply_markup=get_general_keyboard())
-        await state.finish()
-    else:
-        await msg.answer(messages.channel_does_not_exist)
-
-    write_data(links, links_file)
+    db.links.delete_one({'channel_username': msg.text})
+    await msg.answer(messages.channel_removed, reply_markup=get_general_keyboard())
+    await state.finish()
 
 
 async def del_vk_button(msg: types.Message, state: FSMContext):
-    if not msg.text in links:
+    if not db.links.find_one({'channel_username': msg.text}):
         await msg.answer(messages.channel_does_not_exist)
         return
 
@@ -371,17 +322,7 @@ async def del_vk_button(msg: types.Message, state: FSMContext):
 
 async def del_vk_group(msg: types.Message, state: FSMContext):
     print(msg)
-    global links
-    global links_file
-
-    links = read_data(links_file)
-
-    # link = msg.get_args().split('/')[-1]
     user_data = await state.get_data()
-    
-    # for k, v in links.items():
-    #     if v['owner_id'] == msg.from_user.id:
-    #         channel_username = k
     
     if not 'current_channel' in user_data:
         await msg.answer('У вас нет привязанного канала', reply_markup=get_general_keyboard())
@@ -390,19 +331,21 @@ async def del_vk_group(msg: types.Message, state: FSMContext):
     
     channel_username = user_data['current_channel'] 
 
-    if links[channel_username]['status'] == False:
+    obj = db.links.find_one({'channel_username': channel_username})
+    if obj['status'] == False:
         await msg.answer('Канал еще не верифицирован', reply_markup=get_general_keyboard())
         await state.finish()
         return
 
-    if msg.text in links[channel_username]['links']:
-        del links[channel_username]['links'][msg.text]
+    groups_obj = list(filter(lambda x: x['username'] != msg.text, obj['links']))
+    if len(groups_obj) != len(obj['links']):
+        db.links.update_one(
+            {'channel_username': channel_username}, {'$set': {'links': groups_obj}}
+        )
         await msg.answer(messages.group_removed, reply_markup=get_general_keyboard())
         await state.finish()
     else:
         await msg.answer(messages.group_does_not_exist)
-
-    write_data(links, links_file)
 
 
 async def choosing_base_action(msg: types.Message, state: FSMContext):
@@ -433,7 +376,9 @@ async def choosing_base_action(msg: types.Message, state: FSMContext):
 
 
 def create_bot_factory():
-    dp = Dispatcher(bot, storage=MemoryStorage())
+    # dp = Dispatcher(bot, storage=MemoryStorage())
+    storage = MongoStorage(host='localhost', port=27017, db_name='aiogram_fsm')
+    dp = Dispatcher(bot, storage=storage)
 
     dp.register_message_handler(
         start,

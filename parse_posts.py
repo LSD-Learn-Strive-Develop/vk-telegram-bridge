@@ -4,18 +4,20 @@ from typing import Union
 import requests
 from loguru import logger
 
-from tools import prepare_text_for_html, prepare_text_for_reposts, add_urls_to_text
 from api_requests import get_video_url
-from config import VK_TOKEN, REQ_VERSION
+from config import REQ_VERSION, VK_TOKEN
+from tools import add_urls_to_text, prepare_text_for_html, prepare_text_for_reposts, reformat_vk_links
 
 
 def parse_post(
     item: dict, repost_exists: bool, item_type: str, group_name: str
 ) -> dict:
-    print(item)
+    # print(item)
     text = prepare_text_for_html(item["text"])
-    if repost_exists:
-        text = prepare_text_for_reposts(text, item, item_type, group_name)
+    # if repost_exists:
+    text = prepare_text_for_reposts(text, item, item_type, group_name)
+
+    text = reformat_vk_links(text)
 
     urls: list = []
     videos: list = []
@@ -26,28 +28,30 @@ def parse_post(
         parse_attachments(item["attachments"], text, urls, videos, photos, docs)
 
     text = add_urls_to_text(text, urls, videos)
-    text = vk_formatter(text)
+    # text = vk_formatter(text)
     logger.info(f"{item_type.capitalize()} parsing is complete.")
 
     return {"text": text, "photos": photos, "docs": docs}
 
-def vk_formatter(text):
-    while True:
-        res = re.search(r'\[[\w\s\d\-/\.:_@]+\|[\w\s\d\-/\.:_@\"&;]+\]', text)
-        if res:
-            res = res.group(0)
-            ind_separator = res.find('|')
-            vk_link = 'https://vk.com/' + res[1:ind_separator]
-            vk_text = res[ind_separator+1:-1]
-            # print(vk_link)
-            # print(vk_text)
 
-            html_res = '<a href="' + vk_link + '">' + vk_text + '</a>'
-            text = text.replace(res, html_res)
-        else:
-            break
+# def vk_formatter(text):
+#     while True:
+#         res = re.search(r'\[[\w\s\d\-/\.:_@]+\|[\w\s\d\-/\.:_@\"&;]+\]', text)
+#         if res:
+#             res = res.group(0)
+#             ind_separator = res.find('|')
+#             vk_link = 'https://vk.com/' + res[1:ind_separator]
+#             vk_text = res[ind_separator+1:-1]
+#             # print(vk_link)
+#             # print(vk_text)
 
-    return text
+#             html_res = '<a href="' + vk_link + '">' + vk_text + '</a>'
+#             text = text.replace(res, html_res)
+#         else:
+#             break
+
+#     return text
+
 
 def parse_attachments(attachments, text, urls, videos, photos, docs):
     for attachment in attachments:
@@ -77,10 +81,16 @@ def get_url(attachment: dict, text: str) -> Union[str, None]:
 def get_video(attachment: dict) -> str:
     owner_id = attachment["video"]["owner_id"]
     video_id = attachment["video"]["id"]
-    access_key = attachment["video"]["access_key"]
+    video_type = attachment["video"]["type"]
+    access_key = attachment["video"].get("access_key", "")
 
     video = get_video_url(VK_TOKEN, REQ_VERSION, owner_id, video_id, access_key)
-    return video if video else f"https://vk.com/video{owner_id}_{video_id}"
+    if video:
+        return video
+    elif video_type == "short_video":
+        return f"https://vk.com/clip{owner_id}_{video_id}"
+    else:
+        return f"https://vk.com/video{owner_id}_{video_id}"
 
 
 def get_photo(attachment: dict) -> Union[str, None]:
@@ -106,10 +116,7 @@ def get_photo(attachment: dict) -> Union[str, None]:
 
 def get_doc(doc: dict) -> Union[dict, None]:
     if doc["size"] > 50000000:
-        logger.info(
-            "The document was skipped due to its size exceeding the "
-            f"50MB limit: {doc['size']=}."
-        )
+        logger.info(f"The document was skipped due to its size exceeding the 50MB limit: {doc['size']=}.")
         return None
     else:
         response = requests.get(doc["url"])
