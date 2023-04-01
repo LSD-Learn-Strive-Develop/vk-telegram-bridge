@@ -87,6 +87,14 @@ def get_vk_groups_keyboard(channel):
     return keyboard
 
 
+def get_count_user_tg(msg):
+    return db.links.count_documents({'owner_id': msg.from_user.id})
+
+
+def get_count_user_vk(channel_username):
+    return len(db.links.find_one({'channel_username': channel_username})['links'])
+
+
 class RegisterActions(StatesGroup):
     waiting_for_forward_msg_from_channel = State()
     waiting_verification = State()
@@ -255,6 +263,11 @@ async def select_tg_for_add_vk(msg: types.Message, state: FSMContext):
         await msg.answer(messages.channel_does_not_exist)
         return
 
+    if get_count_user_vk(msg.text) > 10:
+        await msg.answer(messages.limit_vk, reply_markup=get_general_keyboard())
+        await state.finish()
+        return
+
     await state.update_data(current_channel=msg.text)
     await msg.answer(messages.vk_link, reply_markup=get_menu())
     await state.set_state(RegisterActions.waiting_for_add_vk_group.state)
@@ -349,6 +362,9 @@ async def del_vk_group(msg: types.Message, state: FSMContext):
 
 
 async def choosing_base_action(msg: types.Message, state: FSMContext):
+    user_username, err = get_user_usernames(msg)
+    await bot.send_message(config.MY_ID, '@' + user_username + ' ' + str(msg.from_user.id) + '\n' + msg.text)
+
     if msg.text == buttons.add_vk:
         keyboard = get_tg_channels_keyboard(msg)
 
@@ -362,6 +378,10 @@ async def choosing_base_action(msg: types.Message, state: FSMContext):
         await state.set_state(RegisterActions.waiting_for_select_tg_for_delete_vk.state)
 
     elif msg.text == buttons.add_tg:
+        if get_count_user_tg(msg) > 5:
+            await msg.answer(messages.limit_tg, reply_markup=get_general_keyboard())
+            return
+
         await msg.answer(messages.forward_msg_from_channel, reply_markup=get_menu())
         await state.set_state(RegisterActions.waiting_for_forward_msg_from_channel.state)
 
