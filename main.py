@@ -46,8 +46,16 @@ db = client[config.MONGO_DB_NAME]
 bot = Bot(config.TG_BOT_TOKEN)
 
 
-def get_general_keyboard():
+async def get_general_keyboard(user_id):
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+    user = db.links.find_one({'owner_id': user_id})
+    if not user:
+        row1 = [buttons.add_tg]
+        keyboard.add(*row1)
+
+        return keyboard
+
     row1 = [buttons.add_vk, buttons.add_tg]
     row2 = [buttons.del_vk, buttons.del_tg]
     row3 = [buttons.show]
@@ -146,7 +154,7 @@ async def on_bot_start_up(dp):
 async def start(msg: types.Message, state: FSMContext):
     print(msg)
 
-    await msg.answer(messages.start, reply_markup=get_general_keyboard())
+    await msg.answer(messages.start, reply_markup=await get_general_keyboard(msg.from_user.id))
     await state.finish()
 
 
@@ -184,7 +192,7 @@ async def show_all(msg: types.Message, state: FSMContext):
 
 async def go_to_menu(msg: types.Message, state: FSMContext):
 
-    await msg.answer(messages.select_action, reply_markup=get_general_keyboard())
+    await msg.answer(messages.select_action, reply_markup=await get_general_keyboard(msg.from_user.id))
     await state.finish()
 
 
@@ -225,11 +233,11 @@ async def forward_message(msg: types.Message, state: FSMContext):
 
         await bot.send_message(config.MY_ID, '@' + user_username + ' @' + channel_username)
         # await msg.answer('Ожидайте верификации', reply_markup=types.ReplyKeyboardRemove())
-        await msg.answer(messages.tg_added, reply_markup=get_general_keyboard())
+        await msg.answer(messages.tg_added, reply_markup=await get_general_keyboard(msg.from_user.id))
         await state.finish()
 
     else:
-        await msg.answer(messages.channel_already_added, reply_markup=get_general_keyboard())
+        await msg.answer(messages.channel_already_added, reply_markup=await get_general_keyboard(msg.from_user.id))
 
 
 # async def add_tg_channel(msg: types.Message, state: FSMContext):
@@ -263,8 +271,8 @@ async def select_tg_for_add_vk(msg: types.Message, state: FSMContext):
         await msg.answer(messages.channel_does_not_exist)
         return
 
-    if get_count_user_vk(msg.text) > 10:
-        await msg.answer(messages.limit_vk, reply_markup=get_general_keyboard())
+    if get_count_user_vk(msg.text) > 15:
+        await msg.answer(messages.limit_vk, reply_markup=await get_general_keyboard(msg.from_user.id))
         await state.finish()
         return
 
@@ -278,7 +286,7 @@ async def add_vk_group(msg: types.Message, state: FSMContext):
     user_data = await state.get_data()
 
     if not 'current_channel' in user_data:
-        await msg.answer('У вас нет привязанного канала', reply_markup=get_general_keyboard())
+        await msg.answer('У вас нет привязанного канала', reply_markup=await get_general_keyboard(msg.from_user.id))
         await state.finish()
         return
 
@@ -289,7 +297,7 @@ async def add_vk_group(msg: types.Message, state: FSMContext):
     channel = db.links.find_one({'channel_username': channel_username})
     print(channel['status'])
     if channel and channel['status'] == False:
-        await msg.answer('Канал еще не верифицирован', reply_markup=get_general_keyboard())
+        await msg.answer('Канал еще не верифицирован', reply_markup=await get_general_keyboard(msg.from_user.id))
         return
 
     groups_usernames = list(map(lambda x: x['username'], channel['links']))
@@ -299,7 +307,7 @@ async def add_vk_group(msg: types.Message, state: FSMContext):
         db.links.update_one(
             {'channel_username': channel_username}, {'$push': {'links': {'username': link, 'last_id': 0}}}
         )
-        await msg.answer(messages.group_added, reply_markup=get_general_keyboard())
+        await msg.answer(messages.group_added, reply_markup=await get_general_keyboard(msg.from_user.id))
         await state.finish()
 
 
@@ -317,7 +325,7 @@ async def del_tg_channel(msg: types.Message, state: FSMContext):
     link = msg.text
 
     db.links.delete_one({'channel_username': msg.text})
-    await msg.answer(messages.channel_removed, reply_markup=get_general_keyboard())
+    await msg.answer(messages.channel_removed, reply_markup=await get_general_keyboard(msg.from_user.id))
     await state.finish()
 
 
@@ -338,7 +346,7 @@ async def del_vk_group(msg: types.Message, state: FSMContext):
     user_data = await state.get_data()
     
     if not 'current_channel' in user_data:
-        await msg.answer('У вас нет привязанного канала', reply_markup=get_general_keyboard())
+        await msg.answer('У вас нет привязанного канала', reply_markup=await get_general_keyboard(msg.from_user.id))
         await state.finish()
         return
     
@@ -346,7 +354,7 @@ async def del_vk_group(msg: types.Message, state: FSMContext):
 
     obj = db.links.find_one({'channel_username': channel_username})
     if obj['status'] == False:
-        await msg.answer('Канал еще не верифицирован', reply_markup=get_general_keyboard())
+        await msg.answer('Канал еще не верифицирован', reply_markup=await get_general_keyboard(msg.from_user.id))
         await state.finish()
         return
 
@@ -355,7 +363,7 @@ async def del_vk_group(msg: types.Message, state: FSMContext):
         db.links.update_one(
             {'channel_username': channel_username}, {'$set': {'links': groups_obj}}
         )
-        await msg.answer(messages.group_removed, reply_markup=get_general_keyboard())
+        await msg.answer(messages.group_removed, reply_markup=await get_general_keyboard(msg.from_user.id))
         await state.finish()
     else:
         await msg.answer(messages.group_does_not_exist)
@@ -379,7 +387,7 @@ async def choosing_base_action(msg: types.Message, state: FSMContext):
 
     elif msg.text == buttons.add_tg:
         if get_count_user_tg(msg) > 5:
-            await msg.answer(messages.limit_tg, reply_markup=get_general_keyboard())
+            await msg.answer(messages.limit_tg, reply_markup=await get_general_keyboard(msg.from_user.id))
             return
 
         await msg.answer(messages.forward_msg_from_channel, reply_markup=get_menu())
@@ -392,7 +400,7 @@ async def choosing_base_action(msg: types.Message, state: FSMContext):
         await state.set_state(RegisterActions.waiting_for_select_tg_for_delete.state)
     
     else:
-        await msg.answer(messages.no_such_action, reply_markup=get_general_keyboard())
+        await msg.answer(messages.no_such_action, reply_markup=await get_general_keyboard(msg.from_user.id))
 
 
 def create_bot_factory():
