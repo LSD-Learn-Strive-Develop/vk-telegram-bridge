@@ -16,9 +16,9 @@ async def send_post(bot: Bot, tg_channel: str, text: str, photos: list, docs: li
         if len(photos) == 0:
             await send_text_post(bot, tg_channel, text, disable_web_page_preview)
         elif len(photos) == 1:
-            await send_photo_post(bot, tg_channel, text, photos)
+            await send_photo_post(bot, tg_channel, text, photos, disable_web_page_preview)
         elif len(photos) >= 2:
-            await send_photos_post(bot, tg_channel, text, photos)
+            await send_photos_post(bot, tg_channel, text, photos, disable_web_page_preview)
         if docs:
             await send_docs_post(bot, tg_channel, docs)
     except exceptions.RetryAfter as ex:
@@ -51,7 +51,7 @@ async def send_text_post(bot: Bot, tg_channel: str, text: str, disable_web_page_
     logger.info("Text post sent to Telegram.")
 
 
-async def send_photo_post(bot: Bot, tg_channel: str, text: str, photos: list) -> None:
+async def send_photo_post(bot: Bot, tg_channel: str, text: str, photos: list, disable_web_page_preview: bool) -> None:
     if len(text) <= 1024:
         await bot.send_photo(tg_channel, photos[0], text, parse_mode=types.ParseMode.HTML)
         logger.info("Text post (<=1024) with photo sent to Telegram.")
@@ -60,12 +60,12 @@ async def send_photo_post(bot: Bot, tg_channel: str, text: str, photos: list) ->
         if len(prepared_text) <= 4096:
             await bot.send_message(tg_channel, prepared_text, parse_mode=types.ParseMode.HTML)
         else:
-            await send_text_post(bot, tg_channel, text)
+            await send_text_post(bot, tg_channel, text, disable_web_page_preview)
             await bot.send_photo(tg_channel, photos[0])
         logger.info("Text post (>1024) with photo sent to Telegram.")
 
 
-async def send_photos_post(bot: Bot, tg_channel: str, text: str, photos: list) -> None:
+async def send_photos_post(bot: Bot, tg_channel: str, text: str, photos: list, disable_web_page_preview: bool) -> None:
     media = types.MediaGroup()
     for photo in photos:
         media.attach_photo(types.InputMediaPhoto(photo))
